@@ -9,7 +9,8 @@ Le système testé intègre deux modules :
 
 Fonctionnalités notables : 
 
-- Trame personalisée d'envoi des messages de la forme <img width="1137" height="172" alt="image" src="https://github.com/user-attachments/assets/4b52e4a6-45e3-4275-805d-63bc157e68e8" />
+- Trame personalisée d'envoi des messages de la forme <img width="611" height="107" alt="image" src="https://github.com/user-attachments/assets/fd4c6593-9546-4b66-885f-256e325013ef" />
+
 - Communication entre capteur sur différents slots temporels
 - Attribution d'un gradient permettant de situer la proximité d'un noeud-capteur à l'origine
 - Code de Hamming (8,4) correcteur d'erreur sur chaque 4 bits de données de la trame 
