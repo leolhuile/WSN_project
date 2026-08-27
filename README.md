@@ -21,7 +21,7 @@ Afin de tester le fonctionnement du projet il est nécessaire d'avoir à disposi
 ainsi que les deux modules cités plus haut **HC-12 SI4463 émetteur-récepteur** sans fil et **BMP280**
 
 Réaliser le cablâge suivant si le shield n'est pas à disposition 
-<img width="1499" height="857" alt="image" src="https://github.com/user-attachments/assets/b95eee3e-da49-4c11-ad21-8b118090cc86" />
+<img width="787" height="451" alt="image" src="https://github.com/user-attachments/assets/4acb7ac9-67a1-4e42-a76d-fa06b968eafb" />
 
 Pour reprendre le travail à partir de ce dossier, est fourni ci dessous un guide d'installation 
 Installer les logiciels STM32CubeProgrammer(https://www.st.com/en/development-tools/stm32cubeprog.html), 
