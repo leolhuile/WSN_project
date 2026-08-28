@@ -50,6 +50,8 @@ UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
+RTC_HandleTypeDef hrtc;
+
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -62,6 +64,7 @@ static void MX_USART1_UART_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_LPTIM1_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_RTC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -76,40 +79,24 @@ void log_step(char *msg)
 
 
 // clear all useless variables 
-uint32_t received_ack = 0;
+#define WAKEUP_TIME_SECONDS  (2U * 60U)
 volatile uint32_t tick = 0;
 uint32_t rtt_min = UINT32_MAX, rtt_max = 0, rtt_sum = 0;
-uint32_t t_send;
 volatile uint32_t rtt;
-uint8_t buff_test[64];
-uint8_t data[64];
-uint16_t lenA = 0;
-uint16_t len =0;
-uint8_t tag = 0x00;
-//uint8_t tab[2] = {tag, data}; pour quelle raison j'aurais envie de faire ça ? 
-uint8_t receive_buffer[1024] ;
-uint8_t rxA[64] ;
-int err_bits =0;
-volatile  int start_test = 0;
-volatile  int rx_flag =0;
+int err_bits =0; // may be usefull for redunduncy (ex : activate hamming code if nb of err bits is 1 or 2)
 volatile uint8_t can_sleep = 1;
-int ack_flag =0;
-int cpt =0;
 char ack[] = "ACK\r\n";
 
-uint8_t rx_pc[64];      // PC → STM32
-uint8_t rx_radio[6];   // HC-12 → STM32  
- uint8_t frame[6];      // STM32 → HC-12 (TX uniquement)
- uint32_t offset = 0;
-uint16_t temperature = 2316 ;
+uint8_t rx_pc[64];     // PC -> STM32
+uint8_t rx_radio[12];   // HC-12 -> STM32  
+uint8_t pairing[1];    //  STM32 -> HC-12 (TX uniquement)
+uint8_t frame[12];      // STM32 -> HC-12 (TX uniquement)
 char AT_phrase[] = "AT+P1\r\n";
 char log_rtt[] = "ACK RECEIVED AND RTT =     \n";
-int status = 0;
-int fb = 0;
 volatile uint8_t woken_by_timer = 0;
-  volatile int wakeup_time = 0;
+volatile int wakeup_time = 0;
 volatile uint32_t cnt = 0;
-  int32_t press_raw;
+int32_t press_raw;
 int32_t temp_raw;
 typedef struct {
     uint16_t dig_T1;
@@ -122,12 +109,33 @@ BMP280_Calib calib;
 int32_t t_fine;
 
 uint8_t calib_buf[24];
+volatile int gradient =0;
+volatile uint8_t result_register[960];
+volatile int taille = 0;
+volatile uint8_t sequence = 0b000001;
+volatile uint32_t count = 0;
 
-// DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
+ // below is receiver parity bits 
+      uint8_t pr1 ; 
+      uint8_t pr2 ; 
+      uint8_t pr4 ; 
+      uint8_t pr8 ;
+      uint8_t curr_frame;
+      uint8_t syndrome;
+      uint8_t decoded_frame[6]; 
+      volatile uint8_t result[6];
 // DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
 const uint8_t node_addr = 0X00; // change accordingly to the address number of your node : DONT FORGET TO CHANGE THIS (server = 00)
+
+// DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
+
+
 //DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
+const uint8_t dst_addr = 0X00; // change accordingly to the address number of the node to be reached : DONT FORGET TO CHANGE THIS (server = 00)
 //DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
+
+int nb_msg_reçus = 0;
+
 // Retourne la température en centièmes de °C. Ex: 5123 = 51.23 °C
 int32_t bmp280_compensate_T_int32(int32_t adc_T)
 {
@@ -186,18 +194,27 @@ uint32_t bmp280_compensate_P_int32(int32_t adc_P)
 
     return p;
 }
+
+uint8_t  decoded_hamming( uint8_t tab1, uint8_t tab2){
+
+    return ((tab1 >> 2) & 1 ) | ((tab1 >> 4) & 1) << 1 | ((tab1 >> 5) & 1) << 2  | ((tab1 >> 6) & 1) << 3  | ((tab2 >> 2) & 1 ) << 4 | ((tab2 >> 4) & 1 )<< 5 | ((tab2 >> 5) & 1 ) << 6 | ((tab2 >> 6) & 1 ) << 7;
+
+}
 /// @brief ////////////////////
 /// @param huart 
 /// @param Size 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
-    char recorded_time[64];
-    int stamp = HAL_GetTick();
-
+           //int goodput_time = HAL_GetTick();
+                        //count = HAL_LPTIM_ReadCounter(&hlptim1);
+                        
+         cnt = HAL_LPTIM_ReadCounter(&hlptim1);
+         //goodput_time = HAL_GetTick() - goodput_time;
+          nb_msg_reçus++;
+          char reveil[64];
+          sprintf(reveil,"nombre de msg reçus = %d",nb_msg_reçus);
+          log_step(reveil);
           if (huart->Instance == LPUART1)
     {
-        //prout = 1;
-        cnt = HAL_LPTIM_ReadCounter(&hlptim1);
-        can_sleep =0;
         wakeup_time = HAL_GetTick();
         
        log_step("MSG RECEIVED :\n");
@@ -206,54 +223,135 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
             char buf[10];
             sprintf(buf, "%02X ", rx_radio[i]);
             HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
+
         }
+            // à partir d'ici, décoder le message et corriger les erreurs de transmission
+            if(Size== 12){
+              log_step("Et après Correction des erreurs :\n");
+               for(int i=0;i<sizeof(rx_radio);i++){
+                curr_frame = rx_radio[i];
+                result_register[taille++]= curr_frame;
+
+                pr1 = (curr_frame & 1) ^ ((curr_frame >> 2) & 1) ^ ((curr_frame >> 4) & 1) ^ ((curr_frame >> 6) & 1); // p1,d1,d2,d4
+                pr2 = ((curr_frame >> 1) & 1) ^ ((curr_frame >> 2) & 1) ^ ((curr_frame >> 5) & 1) ^ ((curr_frame >> 6) & 1); // p2,d1,d3,d4
+                pr4 = ((curr_frame >> 3) & 1) ^ ((curr_frame >> 4) & 1) ^ ((curr_frame >> 5) & 1) ^ ((curr_frame >> 6) & 1); // p4,d2,d3,d4
+                //pr8 = pr1 ^ pr2 ^ (curr_frame & 1)  ; // p1 ^ p2 ^ d1 ^  ((p4 ^ d2 ^ d3 ^ d4) =0)
+                pr8 = 0;
+                for (int b = 0; b < 8; b++) pr8 ^= (curr_frame >> b) & 1;
+                syndrome = pr1 | pr2 << 1 | pr4 << 2 ;
+                if( syndrome != 0 && pr8 == 1){ // one error only 
+                  curr_frame ^= (1 << (syndrome-1)); // inversion du bit erroné 
+                  rx_radio[i] = curr_frame;
+                }
+                else if(pr8 == 0 && syndrome != 0 ){ // at least 2 errors so we request a resend/ do nothing until we receive a good msg
+                     log_step("error, we should not forward the data received\n");
+                     can_sleep =1;
+                }
+
+                // else if (syndrome == 0 && pr8 == 1)  error on pr8 so we don't care 
+
+                                //decoded_frame[i%6] = (i<6)? decoded_hamming(rx_radio[2*i],rx_radio[2*i+1]) : decoded_frame[i%6];
+                                decoded_frame[i%6] = (i>=6)? decoded_hamming(rx_radio[2*(i-6)],rx_radio[2*(i-6)+1]) : decoded_frame[i%6];
+
+               }
+              for(int i=0;i<sizeof(decoded_frame);i++){
+                  char buf[10];
+                  sprintf(buf, "%02X ", decoded_frame[i]);
+                  HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
+
+              }
+
+            }
+
         if (strncmp((char*)rx_radio, "AT", 2) == 0 ||
             strncmp((char*)rx_radio, "OK", 2) == 0) {
             memset(rx_radio, 0, sizeof(rx_radio));
             HAL_UARTEx_ReceiveToIdle_IT(huart, rx_radio, sizeof(rx_radio));
                     can_sleep =1;
-                    fb =0;
             return;  // on ignore et on réarme
         }
-       if((strncmp((char*)rx_radio, "ACK", 3) == 0) ){
+
+
+
+       if((strncmp((char*)rx_radio, "ACK", 3) == 0) || (strncmp((char*)decoded_frame, "ACK", 3) == 0)  ){
          rtt = HAL_GetTick() - rtt ;
            AT_phrase[4] ='1';
            log_step("ACK RECEIVED \n");
            
            sprintf(log_rtt, "%lu", rtt);
            log_step(log_rtt);
-            status =0;
            can_sleep =1;
-           fb =0;
            //increase the number of ack obtained etc
         }
-        else if (rx_radio[1] == node_addr && Size == 6)
+        else if (decoded_frame[1] == node_addr)
         {
           
         log_step("  ... SENDING ACK \n");
 
          // FIX HERE THE FRAME  FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME
-          sprintf(recorded_time,"time of computation : %ld",stamp - HAL_GetTick());
-           log_step(recorded_time);
-        HAL_UART_Transmit(huart, (uint8_t*)ack, strlen(ack), 20); // bloquant
+         
+        HAL_UART_Transmit(huart, (uint8_t*)ack, strlen(ack), 100); // bloquant // no need for hamming code since the message is received, an ack is ok by experience 
         can_sleep =1;
-        fb =0;
          // FIX HERE THE FRAME  FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME
         tick = HAL_GetTick();
         }
         
-        else if (rx_radio[1] != node_addr){
-          log_step("WRONG ADRESS BACK TO SLEEP \n");
+        else if (decoded_frame[1] != node_addr){
+          log_step("WRONG ADRESS BACK TO SLEEP\n");     
           can_sleep =1;
-          fb =0;
         }
-        // HC-12 input
+
+
+        // HC-12 input        
+        //can_sleep =0;
+        memset(decoded_frame,0,sizeof(decoded_frame));
         memset(rx_radio,0,sizeof(rx_radio));
         HAL_UARTEx_ReceiveToIdle_IT(huart, rx_radio, sizeof(rx_radio));
       }
 }
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) // same function but before the update, helps separate USART1 and USART2 logic 
-{
+
+// transform a frame byte into 2Bytes each with 4data bits and 4 parity bits accordingly to hamming code logic 
+uint16_t Hamming_code(const uint8_t trame){
+      // we construct each new "hamming " byte by halving the frame bytes (8,4) => 4data , 4parity 
+      uint16_t res;
+      uint8_t d1 = (trame) & 1; // (x >> i) & 1 type
+      uint8_t d2 = (trame >> 1) & 1;
+      uint8_t d3 = (trame >> 2) & 1;
+      uint8_t d4 = (trame >> 3) & 1;
+      uint8_t d5 = (trame >> 4) & 1; // for the other byte 
+      uint8_t d6 = (trame >> 5) & 1;
+      uint8_t d7 = (trame >> 6) & 1;
+      uint8_t d8 = (trame >> 7) & 1;
+
+
+      uint8_t p1 = d1  ^ d2 ^  d4 ; 
+      uint8_t p2 =  d1  ^ d3 ^  d4 ; 
+      uint8_t p4 = d2  ^ d3 ^  d4 ; 
+      uint8_t p8 = p1 ^ p2 ^ d1 ^ p4 ^ d2 ^ d3 ^ d4;
+
+
+      uint8_t p9 = d5  ^ d6 ^  d8 ; 
+      uint8_t p10 =  d5  ^ d7 ^  d8 ; 
+      uint8_t p12 = d6  ^ d7 ^  d8 ; 
+      uint8_t p16 = p9 ^ p10 ^ d5 ^ p12 ^ d6 ^ d7 ^ d8 ;
+
+      res = (p1 << 0)  |
+            (p2 << 1)  |
+            (d1 << 2)  |
+            (p4 << 3)  |
+            (d2 << 4)  |
+            (d3 << 5)  |
+            (d4 << 6)  |
+            (p8 << 7)  |
+            (p9 << 8)  |
+            (p10 << 9) |
+            (d5 << 10) |
+            (p12 << 11)|
+            (d6 << 12) |
+            (d7 << 13) |
+            (d8 << 14) |
+            (p16 << 15);
+      return res;
 }
 void Send_Sensor_Data(){
     //can_sleep = 0;
@@ -272,34 +370,54 @@ void Send_Sensor_Data(){
 
 
 
+        uint16_t frame_part_1 = Hamming_code(node_addr);
+        uint16_t frame_part_2 = Hamming_code(dst_addr);
+        uint16_t frame_part_3 = Hamming_code((0b01) << 6 |  (sequence));// TYPE of data to be sent (2bits) and SEQUENCE/ index relative to the transfer
+        sequence = ((sequence+1)  % 64 ); // problème : dès qu'on dépasse 63 transfert ce qui est quasi certain on reboucle et on perds l'info sur la durabilité du capteur ? sauf si ceux qui ont l'info la conserve   
+        uint16_t frame_part_4 = Hamming_code(( T >> 8 ) & 0xff); // data temperature  MSB 
+        uint16_t frame_part_5 = Hamming_code( T & 0xff);// data temperature  LSB 
+        uint16_t frame_part_6 = Hamming_code(gradient);
 
          // send data frame 
-         frame[0] = node_addr; // src address 
-         frame[1] = 0X01; // DST address 
-         frame[2] = (0b01) << 6 |  (0b000001); // TYPE of data to be sent (2bits) and SEQUENCE/ index relative to the transfer  
-         //frame[1] = ( T >> 24 ) & 0xff ;// data temperature  MSB 
-         //frame[2] = ( T >> 16 ) & 0xff; 
-         frame[3] = ( T >> 8 ) & 0xff; // data temperature  MSB 
-         frame[4] =  T & 0xff; // data temperature LSB
+          frame[0] = frame_part_1;
+          frame[1] = frame_part_1 >> 8;
+          frame[2] = frame_part_2;
+          frame[3] = frame_part_2 >> 8;
+          frame[4] = frame_part_3;
+          frame[5] = frame_part_3 >> 8;
+          frame[6] = frame_part_4 ;
+          frame[7] = frame_part_4 >> 8;
+          frame[8] = frame_part_5;
+          frame[9] = frame_part_5 >> 8;
+          frame[10] = frame_part_6;
+          frame[11] = frame_part_6 >> 8;
          // info : 2 complement so to read properly you need to reassemble the int-16 signed
          // incrémenter un compteur de nombre de transfert et envoyer cette information pour estimer l'autonomie restante => ça correspond au transfert 
          rtt = HAL_GetTick() ;
-         /*
-                  for (int i = 0; i < 32; i++) // 32 or 768
-          {
-              HAL_UART_Transmit_IT(&huart1, &frame[offset], 32);
-              offset+= 32;
+        //count = HAL_LPTIM_ReadCounter(&hlptim1);
+        uint32_t start = DWT->CYCCNT;
 
-              // attendre callback TxCplt avant de continuer
-          }
-          */
-         HAL_UART_Transmit_IT(&hlpuart1, frame, 5);
-         status =1;
-        //HAL_UART_Transmit_IT(&huart1, frame,  32); // no ?? 
-        //HAL_UART_Transmit(&huart1, frame, , 2000);
-        log_step(" MSG SENT \n");
+        char goodput[64];
+         //HAL_UART_Transmit_IT(&hlpuart1, frame, 6);
+         HAL_UART_Transmit(&hlpuart1, frame, 12, 20);
+
+        uint32_t cycles = DWT->CYCCNT - start;
+        uint32_t us = cycles / (SystemCoreClock / 1000000);
+
+         sprintf(goodput,"MSG SENT and Tick = %ld \n temperature calculated is = ",us);
+         log_step(goodput);
             char msg[64];
-//sprintf(msg, "T=%ld P=%ld\r\n", T, P);
+          for(int i=0;i<sizeof(frame);i++){
+                  char buf[10];
+                  sprintf(buf, "%02X ", frame[i]);
+                  HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
+
+              }
+            // en commentaire : tests de la conversion de temperature en hexa 
+                  //char buf[10];
+                  
+                  //sprintf(buf, "%04lX ", (unsigned long)T);
+                  //HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
 sprintf(msg, "T=%ld.%02ld°C\r\n",
         T/100, T%100);
 HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
@@ -318,6 +436,12 @@ void HAL_LPTIM_CompareMatchCallback(LPTIM_HandleTypeDef *hlptim)
 {
   // Do whatever you want
   woken_by_timer = 1;
+}
+void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
+{
+    // Le STM32 est réveillé après expiration du timer RTC
+      woken_by_timer = 1;
+
 }
 /* USER CODE END 0 */
 
@@ -353,6 +477,10 @@ int main(void)
     {
       Error_Handler();
     }
+
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+DWT->CYCCNT = 0;
+DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -362,6 +490,7 @@ int main(void)
   MX_LPUART1_UART_Init();
   MX_LPTIM1_Init();
   MX_I2C1_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 
   UART_WakeUpTypeDef wakeup;
@@ -398,14 +527,30 @@ HAL_I2C_Mem_Write(&hi2c1, (0x76<<1), 0xF4, I2C_MEMADD_SIZE_8BIT, &ctrl_meas, 1, 
 
 
   log_step("SYSTEM START");
-  //log_step("WAITING PC INPUT");
+  log_step("WAITING FOR GRADIENT ATTRIBUTION");
   HAL_UART_Receive_IT(&huart2, rx_pc, 1);
   HAL_UARTEx_ReceiveToIdle_IT(&hlpuart1, rx_radio, sizeof(rx_radio));
+  HAL_UARTEx_ReceiveToIdle_IT(&hlpuart1, pairing, sizeof(pairing));
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_SET);
   tick = HAL_GetTick();
-  int first_exec = 1;  
-  log_step("FORWARDING NEIGHBOURS");
-  HAL_UART_Transmit_IT(&hlpuart1, &node_addr, 1);
+  //HAL_LPTIM_TimeOut_Start_IT(&hlptim1, 5240, 5240-cnt);
+    // rq code for mtoher node (transmit the gradient msg = FFFFFF?)
+  
+
+  
+
+    uint8_t grad[4];
+  for(int x =0;x<4;x++)grad[x] = 0xF0;
+  HAL_UART_Transmit(&hlpuart1, grad,4,100);
+  HAL_Delay(5000);
+
+
+  log_step("END OF GRADIENT ATTRIBUTION PHASE");
+  woken_by_timer = 0; // maybe a bad idea to do this
+  pairing[0] = 0;
+
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -417,85 +562,9 @@ HAL_I2C_Mem_Write(&hi2c1, (0x76<<1), 0xF4, I2C_MEMADD_SIZE_8BIT, &ctrl_meas, 1, 
     /* USER CODE BEGIN 3 */
 
     // noeud serveur : envoi uniquement une seule fois à ses voisins son adresse 00
-    /*
-    if(can_sleep ){ // no activity for X ms 
-          log_step("ENTERING SLEEP MODE \n");
-            //HAL_UART_Transmit_IT(&hlpuart1, &node_addr, 1);
 
-          ///* entering stop section 
-          //HAL_LPTIM_TimeOut_Stop_IT(&hlptim1);
-          //HAL_LPTIM_TimeOut_Start_IT(&hlptim1, 10240, 10240-cnt);
-          
-          //uint32_t cnt = hlptim1.Instance->CNT;
-          
-          HAL_SuspendTick();
-
-          HAL_PWREx_EnterSTOP2Mode(PWR_SLEEPENTRY_WFI);
-          SystemClock_Config();
-
-                                                                        
-                                                                       
-          HAL_ResumeTick();
-          HAL_Delay(50);  
-          //can_sleep = 0; 
-          tick = HAL_GetTick();
-
-    }
-    */
-
-    // X seconds elapsed so we take the sensor data and send it asap ( copy usart2 in a function )
-    /*
-      if( HAL_GetTick() - tick > 1000  && !can_sleep){ // if nothing is received in 100ticks in this mode then resend . This does not conflict if an ack is received because the can_sleep flag would be on before 100ticks 
-          if(AT_phrase[4] != '8') {
-
-          AT_phrase[4] = ((AT_phrase[4] - '1' + 1 ) % 8 )  + '1';
-          char text[50];
-          snprintf(text, sizeof(text), "POWER UP THE TX %c\n", AT_phrase[4]);
-
-          log_step(text);
-                                                                                                                                    
-          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_RESET);  // toggle the set pin to low so we can change the power 
-          HAL_Delay(100); // delay to shorten                                                                                                                         
-          HAL_UART_Transmit_IT(&huart1, (uint8_t*)(AT_phrase), strlen(AT_phrase));
-          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_SET);   // toggle the set pin to high so we can work again
-          HAL_Delay(100); // delay to shorten 
-          HAL_UART_Transmit_IT(&huart1, frame,  3); // ok ? 
-          }
-          else{
-          HAL_UART_Transmit_IT(&huart1, frame , 3);
-          }
-          tick = HAL_GetTick();
-
-        }*/
 
         
-                                                                                                                        /* test this to compensate for message loss
-                                                                                                                      if( HAL_GetTick() - tick > 500  && !can_sleep){ // if nothing is received in 100ticks in this mode then resend . This does not conflict if an ack is received because the can_sleep flag would be on before 100ticks 
-                                                                                                                          if(AT_phrase[4] != '8') {
-
-                                                                                                                          AT_phrase[4] = ((AT_phrase[4] - '1' + 1 ) % 8 )  + '1';
-                                                                                                                          char text[50];
-                                                                                                                          snprintf(text, sizeof(text), "POWER UP THE TX %c\n", AT_phrase[4]);
-
-                                                                                                                          log_step(text);
-                                                                                                                          
-                                                                                                                          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_RESET);  // toggle the set pin to low so we can change the power 
-                                                                                                                          HAL_Delay(100); // delay to shorten 
-                                                                                                                        
-                                                                                                                          HAL_UART_Transmit_IT(&huart1, (uint8_t*)(AT_phrase), strlen(AT_phrase));
-
-
-                                                                                                                          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_SET);   // toggle the set pin to high so we can work again
-                                                                                                                          HAL_Delay(100); // delay to shorten 
-                                                                                                                          HAL_UART_Transmit_IT(&huart1, frame,  3); // ok ? 
-                                                                                                                          }
-                                                                                                                          else{
-                                                                                                                            HAL_UART_Transmit_IT(&huart1, frame , 3);
-                                                                                                                          }
-                                                                                                                          tick = HAL_GetTick();
-
-                                                                                                                    }
-                                                                                                                          //*/
   }
   /* USER CODE END 3 */
 }
@@ -516,10 +585,17 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
+  /** Configure LSE Drive Capability
+  */
+  HAL_PWR_EnableBkUpAccess();
+  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
+
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI
+                              |RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
@@ -733,6 +809,42 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
+
+  /* USER CODE END RTC_Init 0 */
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+
+  /** Initialize RTC Only
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
+
+  /* USER CODE END RTC_Init 2 */
 
 }
 

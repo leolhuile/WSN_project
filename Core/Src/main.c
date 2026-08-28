@@ -50,6 +50,8 @@ UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
+RTC_HandleTypeDef hrtc;
+
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -62,6 +64,7 @@ static void MX_USART1_UART_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_LPTIM1_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_RTC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -76,6 +79,7 @@ void log_step(char *msg)
 
 
 // clear all useless variables 
+#define WAKEUP_TIME_SECONDS  (2U * 60U)
 volatile uint32_t tick = 0;
 uint32_t rtt_min = UINT32_MAX, rtt_max = 0, rtt_sum = 0;
 volatile uint32_t rtt;
@@ -87,7 +91,7 @@ uint8_t rx_pc[64];     // PC -> STM32
 uint8_t rx_radio[12];   // HC-12 -> STM32  
 uint8_t pairing[1];    //  STM32 -> HC-12 (TX uniquement)
 uint8_t frame[12];      // STM32 -> HC-12 (TX uniquement)
-char AT_phrase[] = "AT+P1\r\n";
+  char AT_phrase[] = "AT+P1";
 char log_rtt[] = "ACK RECEIVED AND RTT =     \n";
 volatile uint8_t woken_by_timer = 0;
 volatile int wakeup_time = 0;
@@ -108,7 +112,29 @@ uint8_t calib_buf[24];
 volatile int gradient =0;
 volatile uint8_t sequence = 0b000001;
 volatile uint32_t count = 0;
-
+int nb_bits_corr =0;
+int nb_reveils = 0;
+int nb_ack = 0;
+int nb_retransmissions = 0; 
+int nb_transmissions =0;
+int number_of_msg =0;
+int pairing_mode =1;
+int ack_flag = 0;
+int energy = 0;
+int neighbour_energy = 0;
+const float power_level[] = {0.05,
+                   0.057,
+                   0.067,
+                   0.08,
+                   0.11,
+                   0.15,
+                   0.18,
+                   0.33
+                    };
+int curr_power = 0;
+const int THRESHOLD_50 = 12000;
+const int THRESHOLD_75 = 24057;
+const int THRESHOLD_90 = 32000;
  // below is receiver parity bits 
       uint8_t pr1 ; 
       uint8_t pr2 ; 
@@ -118,14 +144,20 @@ volatile uint32_t count = 0;
       uint8_t syndrome;
       uint8_t decoded_frame[6]; 
       volatile uint8_t result[6];
+
+
+
+////// utiliser __builtin_popcount lorsque l'on voudra tester des envois prédéfinis 
+
+
 // DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
-const uint8_t node_addr = 0X01; // change accordingly to the address number of your node : DONT FORGET TO CHANGE THIS (server = 00)
+const uint8_t node_addr = 0X02; // change accordingly to the address number of your node : DONT FORGET TO CHANGE THIS (server = 00)
 
 // DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
 
 
 //DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
-const uint8_t dst_addr = 0X02; // change accordingly to the address number of the node to be reached : DONT FORGET TO CHANGE THIS (server = 00)
+const uint8_t dst_addr = 0X00; // change accordingly to the address number of the node to be reached : DONT FORGET TO CHANGE THIS (server = 00)
 //DONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THISDONT FORGET TO CHANGE THIS
 
 
@@ -200,24 +232,26 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
            //int goodput_time = HAL_GetTick();
                         //count = HAL_LPTIM_ReadCounter(&hlptim1);
                         
-         cnt = HAL_LPTIM_ReadCounter(&hlptim1);
+         uint32_t start = DWT->CYCCNT;
+
          //goodput_time = HAL_GetTick() - goodput_time;
+        //uint32_t start = DWT->CYCCNT;
 
           if (huart->Instance == LPUART1)
     {
         wakeup_time = HAL_GetTick();
         
-       log_step("MSG RECEIVED :\n");
+       //log_step("MSG RECEIVED :\n");
        // writing every byte in hexa 
         for(int i=0;i<sizeof(rx_radio);i++){
             char buf[10];
             sprintf(buf, "%02X ", rx_radio[i]);
-            HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
+            //HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
 
         }
             // à partir d'ici, décoder le message et corriger les erreurs de transmission
             if(Size== 12){
-              log_step("Et après Correction des erreurs :\n");
+              //log_step("Et après Correction des erreurs :\n");
                for(int i=0;i<sizeof(rx_radio);i++){
                 curr_frame = rx_radio[i];
 
@@ -231,9 +265,13 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
                 if( syndrome != 0 && pr8 == 1){ // one error only 
                   curr_frame ^= (1 << (syndrome-1)); // inversion du bit erroné 
                   rx_radio[i] = curr_frame;
+                  nb_bits_corr++;
+                  char log[64];
+                  sprintf(log," Erreurs détectées jusqu'à maintenant %d" ,nb_bits_corr);
+                  //log_step(log);
                 }
                 else if(pr8 == 0 && syndrome != 0 ){ // at least 2 errors so we request a resend/ do nothing until we receive a good msg
-                     log_step("error, we should not forward the data received\n");
+                     //log_step("error, we should not forward the data received\n");
                      can_sleep =1;
                 }
 
@@ -246,7 +284,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
               for(int i=0;i<sizeof(decoded_frame);i++){
                   char buf[10];
                   sprintf(buf, "%02X ", decoded_frame[i]);
-                  HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
+                  //HAL_UART_Transmit(&huart2, (uint8_t*)buf, strlen(buf), 100);
 
               }
 
@@ -265,6 +303,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
        if((strncmp((char*)rx_radio, "ACK", 3) == 0) || (strncmp((char*)decoded_frame, "ACK", 3) == 0)  ){
          rtt = HAL_GetTick() - rtt ;
            AT_phrase[4] ='1';
+           ack_flag =1;
            log_step("ACK RECEIVED \n");
            
            sprintf(log_rtt, "%lu", rtt);
@@ -272,40 +311,62 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
            can_sleep =1;
            //increase the number of ack obtained etc
         }
-        else if (decoded_frame[1] == node_addr || rx_radio[1] == node_addr)
+        else if (decoded_frame[1] == node_addr) // changer la condition car c'est surout tout les noeuds qui sont capables de forward qui devront le faire
         {
           
         log_step("  ... SENDING ACK \n");
 
          // FIX HERE THE FRAME  FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME
-         
-        HAL_UART_Transmit(huart, (uint8_t*)ack, strlen(ack), 1); // bloquant // no need for hamming code since the message is received, an ack is ok by experience 
+         nb_ack++;
+        char ack_cpt[64];
+        sprintf(ack_cpt, "Nombre d'ack envoyés = %d ", nb_ack);
+        HAL_UART_Transmit(huart, (uint8_t*)ack, strlen(ack), 100); // bloquant // no need for hamming code since the message is received, an ack is ok by experience 
         can_sleep =1;
          // FIX HERE THE FRAME  FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME FIX HERE THE FRAME
         tick = HAL_GetTick();
         }
         
-        else if (decoded_frame[1] != node_addr || rx_radio[1] != node_addr){
-          log_step("WRONG ADRESS BACK TO SLEEP\n");
-          if(rx_radio[5] > gradient) {
-                        log_step("WE FORWARD THE MESSAGE \n");
-                         HAL_UART_Transmit_IT(huart, rx_radio , Size); 
+        else if (decoded_frame[1] != node_addr ){
+          //log_step("WRONG ADRESS BACK TO SLEEP\n");
+          if(decoded_frame[5] > gradient) { //  > NOT == 
+                        //log_step("WE FORWARD THE MESSAGE AND SEND AN ACK \n");
+                         //HAL_UART_Transmit_IT(huart, rx_radio , Size); 
+                         //HAL_UART_Transmit(huart, (uint8_t*)ack, strlen(ack), 100);
+                        uint32_t total = DWT->CYCCNT - start ;
+                        uint32_t us = total / (SystemCoreClock / 1000000);
+                        char trip_time[64];
+                        sprintf(trip_time,"Ticks counted for forwarding = %ld us \n",us);
+                        log_step(trip_time);
+                        HAL_UART_Transmit(huart, rx_radio, Size, 100);
+
+
+                         log_step("MSG FORWARDED");
           }      
           can_sleep =1;
         }
 
-         if (Size == 1 && gradient ==0){ // 1st gradient modif and we received a 1 length word so only pairing mode can do this, process data accordingly
+         if (Size == 4 && pairing_mode){ // 1st gradient modif and we received a 1 length word so only pairing mode can do this, process data accordingly
           log_step("GRADIENT ATTRIBUTED... FORWARDING NEIGHBOURS"); 
-          gradient = pairing[0]++;
+          //gradient = pairing[0]++;
+          rx_radio[0] = (rx_radio[0]+1);
+          gradient = rx_radio[0] & 0x0F;
           can_sleep =1;
-          uint8_t g = (uint8_t)gradient;
-          HAL_UART_Transmit_IT(&hlpuart1, &g, 1);
+          pairing_mode = 0;
+          //uint8_t g = (uint8_t)gradient;
+          HAL_UART_Transmit(&hlpuart1, rx_radio, 4,100);
 
         }
         // HC-12 input        
-        can_sleep =0;
+        //can_sleep =0;
         memset(decoded_frame,0,sizeof(decoded_frame));
         memset(rx_radio,0,sizeof(rx_radio));
+        /*
+        uint32_t cycles = DWT->CYCCNT - start;
+        uint32_t us = cycles / (SystemCoreClock / 1000000);
+        char trip_time[64];
+         sprintf(trip_time,"Ticks counted for reception = %ld \n",us);
+         log_step(trip_time);
+         */
         HAL_UARTEx_ReceiveToIdle_IT(huart, rx_radio, sizeof(rx_radio));
       }
 }
@@ -427,15 +488,59 @@ HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
         
 }
 
+// estime l'énergie consommée à l'instant T par le capteur et ses plus proches voisins 
+// détermine la puissance d'envoi des prochains messages 
+// détermine (peut etre jsp encore) le baudrate adapté 
+// prend en compte le nombre d'ack reçu et choisi le destinataire avec le lien le plus fort ? 
+// dtermine si c'est mieux de reach le voisin d'après pour faire moins de saut quitte à utiliser plus de puissance ? 
+// on suppose batterie de 3k mah à 3.3V 
+void Survey_Prog_Conso(){
+
+
+    // energy += nb_transmissions(normales) * energie_dunetransmission_actuelle
+      energy += nb_transmissions * (0.0125 * power_level[curr_power]);
+
+    // si les noeuds voisins sont > dune certaine valeur alors on augmente la puissance et gradient+1
+        if( neighbour_energy > THRESHOLD_50){
+          // up power 
+          gradient++;
+        }
+    // si on est au dessus d'une certaine valeur alors on diminue notre gradient de 1 si il est >1
+        if( energy > THRESHOLD_90){
+          gradient = (gradient > 1)? gradient-1 : gradient;
+          // chercher d'autres moyens d'économiser la consommation 
+        }
+    // si on ne reçoit plus d'ack et qu'on est au dessus d'une certaine valeur alors on augmente le gradient de 1 et la puissance d'emission de 1 
+        if( energy > THRESHOLD_75){
+          gradient++;
+          curr_power++;
+          // chercher d'autres moyens d'économiser la consommation 
+        }
+}
+
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart){
 
     tick = HAL_GetTick();
 }
 
-void HAL_LPTIM_CompareMatchCallback(LPTIM_HandleTypeDef *hlptim)
+void HAL_LPTIM_CompareMatchCallback(LPTIM_HandleTypeDef *hlptim) //obselete
 {
   // Do whatever you want
   woken_by_timer = 1;
+  nb_reveils++;
+}
+void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
+{
+    // Le STM32 est réveillé après expiration du timer RTC
+      woken_by_timer = 1;
+      /*
+      nb_reveils++;
+      char reveil[64];
+      sprintf(reveil,"nombre de réveils = %d",nb_reveils);
+      log_step(reveil);
+      */
+
+
 }
 /* USER CODE END 0 */
 
@@ -484,10 +589,12 @@ DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   MX_LPUART1_UART_Init();
   MX_LPTIM1_Init();
   MX_I2C1_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 
   UART_WakeUpTypeDef wakeup;
   wakeup.WakeUpEvent = UART_WAKEUP_ON_STARTBIT;
+  HAL_LPTIM_Counter_Start(&hlptim1, 0xFFFF);
 
   HAL_UARTEx_StopModeWakeUpSourceConfig(&hlpuart1, wakeup);
   HAL_UARTEx_StopModeWakeUpSourceConfig(&huart2, wakeup);
@@ -520,13 +627,52 @@ HAL_I2C_Mem_Write(&hi2c1, (0x76<<1), 0xF4, I2C_MEMADD_SIZE_8BIT, &ctrl_meas, 1, 
 
 
   log_step("SYSTEM START");
-  log_step("WAITING PC INPUT");
+  log_step("WAITING FOR GRADIENT ATTRIBUTION");
   HAL_UART_Receive_IT(&huart2, rx_pc, 1);
   HAL_UARTEx_ReceiveToIdle_IT(&hlpuart1, rx_radio, sizeof(rx_radio));
   HAL_UARTEx_ReceiveToIdle_IT(&hlpuart1, pairing, sizeof(pairing));
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET); 
   tick = HAL_GetTick();
-          // HAL_LPTIM_TimeOut_Start_IT(&hlptim1, 5240, 5240-cnt);
+  //HAL_LPTIM_TimeOut_Start_IT(&hlptim1, 5240, 5240-cnt);
+    // rq code for mtoher node (transmit the gradient msg = FFFFFF?)
+  /*
+  uint8_t grad[4];
+  for(int x =0;x<4;x++)grad[x] = 0xF0;
+  HAL_UART_Transmit(&hlpuart1, grad,4,100);
+
+
+  */
+/*
+  //////// remise à 1 de la puissance /////////////////////////////////
+        uint16_t lenResp_temp = 0;
+      uint8_t rxResp_temp[64];
+   HAL_UART_Abort(&hlpuart1);   // stoppe la réception IT en cours, remet l'état à READY
+
+          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);  // toggle the set pin to low so we can change the power 
+
+          HAL_Delay(100); // delay to shorten      
+          
+          
+
+          HAL_UART_Transmit(&hlpuart1, (uint8_t*)(AT_phrase), strlen(AT_phrase),100);
+          //char text2[50];
+          //snprintf(text2, sizeof(text2), " %d", HAL_UARTEx_ReceiveToIdle(&hlpuart1, rxResp_temp, sizeof(rxResp_temp), &lenResp_temp, 500));
+          //log_step(text2);
+          if (HAL_UARTEx_ReceiveToIdle(&hlpuart1, rxResp_temp, sizeof(rxResp_temp), &lenResp_temp, 500) == HAL_OK && lenResp_temp > 0){};
+
+          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET);   // toggle the set pin to high so we can work again
+          HAL_Delay(100); // delay to shorten 
+          HAL_UART_Transmit(&huart1, frame,  12,300); // ok ?
+  ///////// code pas encore vérfié  //////////////////////////////
+  */
+  HAL_Delay(50); // before was 50k
+  log_step("END OF GRADIENT ATTRIBUTION PHASE");
+  woken_by_timer = 0; // maybe a bad idea to do this
+  pairing[0] = 0;
+HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 5 , RTC_WAKEUPCLOCK_CK_SPRE_16BITS);
+
+//  rajouetr une condition pour arreter la transmission après X envois 
 
   /* USER CODE END 2 */
 
@@ -539,15 +685,18 @@ HAL_I2C_Mem_Write(&hi2c1, (0x76<<1), 0xF4, I2C_MEMADD_SIZE_8BIT, &ctrl_meas, 1, 
     /* USER CODE BEGIN 3 */
 
     // noeud serveur : envoi uniquement une seule fois à ses voisins son adresse 00
+
     if(can_sleep ){ // no activity for X ms 
           log_step("ENTERING SLEEP MODE \n");
           // entering stop section 
-          HAL_LPTIM_TimeOut_Stop_IT(&hlptim1);
-          HAL_LPTIM_TimeOut_Start_IT(&hlptim1, 5240, 5240-cnt);
+          //HAL_LPTIM_TimeOut_Stop_IT(&hlptim1);
+          //HAL_LPTIM_TimeOut_Start_IT(&hlptim1, 5240, 5240-cnt);
           
           //uint32_t cnt = hlptim1.Instance->CNT;
           HAL_SuspendTick();
 
+          if(woken_by_timer)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 5 , RTC_WAKEUPCLOCK_CK_SPRE_16BITS); // WAKEUP_TIME_SECONDS before was 20 and for test : 60
+          // WAKEUP_TIME_SECONDS
           HAL_PWREx_EnterSTOP2Mode(PWR_SLEEPENTRY_WFI);
           SystemClock_Config();
 
@@ -584,15 +733,77 @@ HAL_I2C_Mem_Write(&hi2c1, (0x76<<1), 0xF4, I2C_MEMADD_SIZE_8BIT, &ctrl_meas, 1, 
 
         }*/
     if(woken_by_timer ){
+      ack_flag =0;
+      nb_transmissions++;
     Send_Sensor_Data();
+            tick = HAL_GetTick();
             uint8_t ctrl_meas = (0b001 << 5) | (0b001 << 2) | 0b01; // osrs_t=x1, osrs_p=x1, forced mode
         HAL_I2C_Mem_Write(&hi2c1, (0x76<<1), 0xF4, I2C_MEMADD_SIZE_8BIT, &ctrl_meas, 1, 100);
       woken_by_timer =0;
-
-        tick = HAL_GetTick();
+      number_of_msg++;
+            char reveil[64];
+      sprintf(reveil,"nombre de msg envoyés = %d",number_of_msg);
+      log_step(reveil);
+      HAL_Delay(200);
 
     }
-        
+    /*
+    while( HAL_GetTick() - tick > 1000  ||  !ack_flag){ // if nothing is received in 100ticks in this mode then resend . This does not conflict if an ack is received because the can_sleep flag would be on before 100ticks 
+      uint16_t lenResp_temp = 0;
+      uint8_t rxResp_temp[64];
+      memset(rxResp_temp, 0, sizeof(rxResp_temp));    
+      if(AT_phrase[4] != '8') {
+
+          AT_phrase[4] = ((AT_phrase[4] - '1' + 1 ) % 8 )  + '1';
+          char text[50];
+          snprintf(text, sizeof(text), "POWER UP THE TX %c\n", AT_phrase[4]);
+
+          log_step(text);
+                                                          
+          HAL_UART_Abort(&hlpuart1);   // stoppe la réception IT en cours, remet l'état à READY
+
+          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);  // toggle the set pin to low so we can change the power 
+
+          HAL_Delay(100); // delay to shorten      
+          
+          
+
+          HAL_UART_Transmit(&hlpuart1, (uint8_t*)(AT_phrase), strlen(AT_phrase),100);
+          //char text2[50];
+          //snprintf(text2, sizeof(text2), " %d", HAL_UARTEx_ReceiveToIdle(&hlpuart1, rxResp_temp, sizeof(rxResp_temp), &lenResp_temp, 500));
+          //log_step(text2);
+          if (HAL_UARTEx_ReceiveToIdle(&hlpuart1, rxResp_temp, sizeof(rxResp_temp), &lenResp_temp, 500) == HAL_OK && lenResp_temp > 0){};
+
+          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET);   // toggle the set pin to high so we can work again
+          HAL_Delay(100); // delay to shorten 
+          HAL_UART_Transmit(&huart1, frame,  12,300); // ok ? 
+          energy += 0.0125*power_level[((AT_phrase[4] - '1' + 1 ) % 8 )  - 1];
+          curr_power = ((AT_phrase[4] - '1' + 1 ) % 8 )  - 1 ;
+          }
+          else{
+          HAL_UART_Transmit(&huart1, frame , 12,300); 
+          energy += 0.0125*power_level[7];
+          curr_power = 7;
+          }
+          memset(rx_radio, 0, sizeof(rx_radio));
+          HAL_UARTEx_ReceiveToIdle_IT(&hlpuart1, rx_radio, sizeof(rx_radio));
+          tick = HAL_GetTick();
+          HAL_Delay(500);
+
+        }
+       
+    if(nb_transmissions == 10){
+                  log_step("FIN DES TESTS  \n");
+                  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+                  
+                  // afficher les résultats des tests => nombre d'ack reçus, nombre envoyé, messages envoyés, messages reçus etc ....
+                  char res_buf[128];
+                  sprintf(res_buf, "nombre de bits corrigés :  %d \n nombre d'ACK reçus : %d \n  nombre de réveils : %d \n nombre de msg envoyés :  %d \n ",nb_bits_corr, nb_ack , nb_reveils , number_of_msg);
+                  log_step(res_buf);
+                  HAL_Delay(50000);
+
+    }
+                  */
   }
   /* USER CODE END 3 */
 }
@@ -613,10 +824,17 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
+  /** Configure LSE Drive Capability
+  */
+  HAL_PWR_EnableBkUpAccess();
+  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
+
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI
+                              |RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
@@ -834,6 +1052,42 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
+
+  /* USER CODE END RTC_Init 0 */
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+
+  /** Initialize RTC Only
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
+
+  /* USER CODE END RTC_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -853,7 +1107,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, LD2_Pin|GPIO_PIN_11, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_10, GPIO_PIN_SET);
@@ -875,11 +1129,9 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PA0 PA1 PA4 PA6
-                           PA7 PA8 PA11 PA12
-                           PA15 */
+                           PA7 PA8 PA12 PA15 */
   GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_4|GPIO_PIN_6
-                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_11|GPIO_PIN_12
-                          |GPIO_PIN_15;
+                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_12|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
@@ -902,6 +1154,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PA11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PC10 */
   GPIO_InitStruct.Pin = GPIO_PIN_10;
