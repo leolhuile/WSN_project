@@ -103,38 +103,8 @@ Le fonctionnement du nœud repose principalement sur une architecture événemen
 
 Le fonctionnement général est le suivant :
 
-```text
-Initialisation
-      │
-      ▼
-Attribution du gradient
-      │
-      ▼
-Configuration du réseau
-      │
-      ▼
-┌─────────────────────────┐
-│       STOP2 / Sleep     │
-└───────────┬─────────────┘
-            │
-       ┌────┴─────┐
-       │          │
-       ▼          ▼
-  Timer RTC    Réception
-       │          │
-       ▼          ▼
- Transmission  Traitement
-       │       de la trame
-       │          │
-       │     ┌────┴─────┐
-       │     │          │
-       │     ▼          ▼
-       │    ACK      Relais
-       │               │
-       └───────┬───────┘
-               ▼
-            STOP2
-```
+<img width="892" height="827" alt="image" src="https://github.com/user-attachments/assets/b7f9a168-be9c-438e-bea2-00b3112c02f9" />
+
 
 Lorsqu'une trame est reçue, elle est décodée et vérifiée. Le nœud peut alors :
 
@@ -233,7 +203,6 @@ STM32CubeIDE peut également être utilisé comme environnement de développemen
 
 Lorsque le shield utilisé pour le prototype n'est pas disponible, les modules peuvent être câblés directement sur la carte.
 
-> **Schéma de câblage à insérer ici**
 
 Le BMP280 utilise l'interface **I²C**.
 
@@ -424,22 +393,22 @@ L'objectif est d'identifier le modèle le plus pertinent selon le niveau de pré
 
 ## État du projet
 
-| Fonctionnalité                                   | État                                   |
-| ------------------------------------------------ | -------------------------------------- |
-| Communication HC-12                              | ✅ Testée                               |
-| Communication BMP280 / I²C                       | ✅ Testée                               |
-| ACK et retransmission                            | ✅ Testés                               |
-| Mesure RTT                                       | ✅ Testée                               |
-| Mesure PER / BER                                 | ✅ Testée                               |
-| Communication multi-nœuds                        | ✅ Testée                               |
-| Routage par gradient                             | ✅ Implémenté et testé                  |
-| TDMA                                             | ✅ Implémenté                           |
-| Hamming (8,4)                                    | ✅ Implémenté et testé                  |
-| STOP2                                            | ✅ Implémenté et testé                  |
-| Réveil RTC                                       | ✅ Implémenté                           |
-| Profilage énergétique des voisins                | ⚠️ Implémenté, validation limitée      |
-| Adaptation dynamique du gradient selon l'énergie | ⚠️ Fonctionnalité expérimentale        |
-| Wake-Up Radio                                    | 🔬 Étudiée théoriquement, non intégrée |
+| Fonctionnalité                                   | État                                   
+| ------------------------------------------------ | -------------------------------------- 
+| Communication HC-12                              | ✅ Testée                               
+| Communication BMP280 / I²C                       | ✅ Testée                               
+| ACK et retransmission                            | ✅ Testés                               
+| Mesure RTT                                       | ✅ Testée                               
+| Mesure PER / BER                                 | ✅ Testée                               
+| Communication multi-nœuds                        | ✅ Testée                               
+| Routage par gradient                             | ✅ Implémenté et testé                  
+| TDMA                                             | ✅ Implémenté et testé                        
+| Hamming (8,4)                                    | ✅ Implémenté et testé                 
+| STOP2                                            | ✅ Implémenté et testé                  
+| Réveil RTC                                       | ✅ Implémenté et testé                          
+| Profilage énergétique des voisins                | Implémenté, validation limitée      
+| Adaptation dynamique du gradient selon l'énergie | Fonctionnalité expérimentale        
+| Wake-Up Radio                                    | Étudiée théoriquement, non intégrée 
 
 ---
 
